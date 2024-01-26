@@ -2,3 +2,4 @@ build/*
 dist/*
 test/*.docx
 *.spec
+__pycache__/*

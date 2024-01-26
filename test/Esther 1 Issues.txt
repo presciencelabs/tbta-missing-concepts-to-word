@@ -157,7 +157,7 @@ Concept (Verb): recline-A  'complex - to recline at a table while eating'
 Verse: Esther 1:6 <<Before the guests came to the garden,>> white linen curtains and blue linen curtains were hung there. Those curtains were attached to marble pillars using silver rings, white linen ropes, and purple cloths. Gold couches and silver couches were put in the garden. The garden floor was made of beautiful stones, marble, shells, and valuable gems. Footnote: During feasts people reclined on couches while they ate.
  
 Concept (Noun): cup-A  'a container for drinking'
-Verse: Esther 1:7 The guests drank wine from gold goblets. There were many kinds of goblets. King Xerxes gave a lot of wine to the people because he was very generous.
+Verse: Esther 1:7
  
 Concept (Adposition): -Kind of-A  'marks kinds of things (There are many kinds of birds.)'
 Verse: Esther 1:7 The guests drank wine from gold goblets. There were many kinds of goblets. King Xerxes gave a lot of wine to the people because he was very generous.

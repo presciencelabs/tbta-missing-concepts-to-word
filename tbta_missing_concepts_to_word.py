@@ -19,13 +19,38 @@ from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_COLOR_INDEX
 from docx.shared import Pt, Cm
 
 
-class UnlinkedConcept:
-    def __init__(self, group, word, gloss):
-        self.group = group
-        self.word = word
-        self.gloss = gloss
-        self.verse = ''
-        self.sample = ''
+# Parameter Name Constants
+PARAM_INPUT_PATH = 'input_path'
+PARAM_OUTPUT_PATH = 'output_path'
+PARAM_NOTES_COLUMN = 'add_notes_column'
+PARAM_PASSAGE = 'passage'
+
+# Concept Info Fields
+CONCEPT_WORD = 'word'
+CONCEPT_GLOSS = 'gloss'
+CONCEPT_VERSE_REF = 'verse_ref'
+CONCEPT_VERSE_TEXT = 'verse_text'
+CONCEPT_OCCURRENCES = 'verse_occurrences'
+CONCEPT_SAMPLE = 'sample'
+
+# Semantic Categories
+CATEGORY_PROPER = 'Proper Name'
+CATEGORY_NOUN = 'Noun'
+CATEGORY_VERB = 'Verb'
+CATEGORY_ADJECTIVE = 'Adjective'
+CATEGORY_ADVERB = 'Adverb'
+CATEGORY_ADPOSITION = 'Adposition'
+CATEGORY_CONJUNCTION = 'Conjunction'
+CATEGORY_PARTICLE = 'Particle'
+CATEGORY_PHRASAL = 'Phrasal'
+
+# Table Header Names
+HEADER_GLOSS = 'Glosses'
+HEADER_OCCURRENCE = 'Verses'
+HEADER_SAMPLE = 'Target Sentences'
+HEADER_TARGET_WORD = 'Target Words'
+HEADER_TARGET_GLOSS = 'Target Glosses'
+HEADER_NOTES = 'Notes'
 
 
 def get_params():
@@ -44,48 +69,86 @@ def get_params():
         return None
 
     return {
-        'input_path': file_path,
-        'output_path': file_path.with_name(f'Lexicon - {file_path.stem}.docx'),
-        'add_notes_column': '-N' in sys.argv or '-n' in sys.argv
+        PARAM_INPUT_PATH: file_path,
+        PARAM_OUTPUT_PATH: file_path.with_name(f'Lexicon - {file_path.stem}.docx'),
+        PARAM_NOTES_COLUMN: '-N' in sys.argv or '-n' in sys.argv
     }
 
 
 def import_concepts(params):
-    CONCEPT_REGEX = re.compile(r'^Concept \(([a-zA-Z]+)\): ([.a-zA-Z0-9- ]+?-[A-Z])(?:  \'(.+?)\')?$')
-    groups = {}
+    CONCEPT_REGEX = re.compile(r'^Concept \((?P<category>[a-zA-Z]+)\): (?P<word>[.a-zA-Z0-9- ]+?-[A-Z])(?:  \'(?P<gloss>.+?)\')?$')
+    VERSE_REGEX = re.compile(r'^Verse: (?P<ref>[.a-zA-Z0-9- ]+:\d+) ?(?P<text>.*)$')
+    categories = {}
 
-    path = params['input_path']
+    def add_concept_to_category(concept, category):
+        if category == CATEGORY_NOUN and concept[CONCEPT_WORD][0].isupper():
+            category = CATEGORY_PROPER
+        if category not in categories:
+            categories[category] = []
+        categories[category].append(concept)
+        return category
+
+    path = params[PARAM_INPUT_PATH]
     with path.open() as f:
         concept = None
+        category = ''
         for line_num, line in enumerate(f):
             if line.startswith('Concept'):
-                m = CONCEPT_REGEX.match(line)
-                if not m:
+                concept_match = CONCEPT_REGEX.match(line)
+                if not concept_match:
                     print('Unexpected format for Concept on line ' + str(line_num))
                     continue
-                word = m[2]
-                group  = 'Proper Nouns' if m[1] == 'Noun' and word[0].isupper() else (m[1] + 's')
-                gloss = m[3] or ''
-                concept = UnlinkedConcept(group, word, gloss)
+                # TODO remove the (LDV) (proper name) etc from the gloss, except for (complex)
+                concept = {
+                    CONCEPT_WORD: concept_match['word'],
+                    CONCEPT_GLOSS: concept_match['gloss'] or ''
+                }
+                category = add_concept_to_category(concept, concept_match['category'])
 
             elif line.startswith('Sample Sentence'):
-                concept.sample = line[len('Sample Sentence: '):].strip()
+                concept[CONCEPT_SAMPLE] = line[len('Sample Sentence: '):].strip()
 
             elif line.startswith('Verse'):
-                concept.verse = line[len('Verse: '):].strip()
-                if concept.group not in groups:
-                    groups[concept.group] = []
-                groups[concept.group].append(concept)
+                if category == CATEGORY_PROPER:
+                    continue
+                verse_match = VERSE_REGEX.match(line)
+                concept[CONCEPT_VERSE_REF] = verse_match['ref']
+                concept[CONCEPT_VERSE_TEXT] = verse_match['text']
+                concept[CONCEPT_OCCURRENCES] = extract_verse_occurrences(concept[CONCEPT_WORD], verse_match['text'])
 
             elif line.startswith('Current Passage'):
-                params['passage'] = line[len('Current Passage: '):].strip()
+                # This only appears once at the top of the text file
+                params[PARAM_PASSAGE] = line[len('Current Passage: '):].strip()
 
-    for k,v in groups.items():
-        print(f'Retrieved {len(v)} {k} unlinked concepts from "{path}"')
-    return groups
+    # Only for debug purposes
+    # for k,v in categories.items():
+    #     print(f'Retrieved {len(v)} {k} unlinked concepts from "{path}"')
+    return categories
 
 
-def export_document(groups, params):
+SENTENCE_REGEX = re.compile(r'([^.?!]+[.?!]\S*) ?')
+def extract_verse_occurrences(word, text):
+    # Remove the sense -X from the word
+    dash_idx = word.rindex('-')
+    word = word[:dash_idx]
+    
+    occurrences = []
+
+    # The verse might have an unrecognizable form of the word, the word
+    # might not be present at all due to restructuring. 
+    word_regex = r'\b(' + re.escape(word) + r'(?:s|es|ed|d)?)\b'
+    for sentence in SENTENCE_REGEX.findall(text):
+        word_match = re.search(word_regex, sentence, re.IGNORECASE)
+        if word_match:
+            occurrences.append({
+                'sentence': sentence,
+                'location': word_match.span(1),
+            })
+
+    return occurrences
+
+
+def export_document(categories, params):
     doc = Document()
     doc.styles['Normal'].font.name = 'Calibri (Body)'
 
@@ -100,156 +163,112 @@ def export_document(groups, params):
     section.left_margin = Cm(2.54)
     section.right_margin = Cm(2.54)
 
-    # Add the passage
-    p = doc.add_paragraph(params['passage'])
-    r = p.runs[0]
-    r.bold = True
-    r.font.size = Pt(14)
+    # Add the passage as a heading
+    passage_paragraph = doc.add_paragraph(params[PARAM_PASSAGE])
+    passage_run = passage_paragraph.runs[0]
+    passage_run.bold = True
+    passage_run.font.size = Pt(14)
 
     # Create the tables
-    add_notes_column = params['add_notes_column']
-    next_idx = create_names_tables(groups, doc)
-    next_idx = create_table('Nouns', groups, doc, next_idx, add_notes_column)
-    next_idx = create_table('Verbs', groups, doc, next_idx, add_notes_column)
-    next_idx = create_table('Adjectives', groups, doc, next_idx, add_notes_column)
-    next_idx = create_table('Adverbs', groups, doc, next_idx, add_notes_column)
-    next_idx = create_table('Adpositions', groups, doc, next_idx, add_notes_column)
-    next_idx = create_table('Conjunctions', groups, doc, next_idx, add_notes_column)
-    next_idx = create_table('Particles', groups, doc, next_idx, add_notes_column)
-    doc.save(str(params['output_path']))
+    table_order = [
+        CATEGORY_PROPER,
+        CATEGORY_NOUN,
+        CATEGORY_VERB,
+        CATEGORY_ADJECTIVE,
+        CATEGORY_ADVERB,
+        CATEGORY_ADPOSITION,
+        CATEGORY_CONJUNCTION,
+        CATEGORY_PARTICLE,
+        CATEGORY_PHRASAL,
+    ]
+    ordered_categories = sorted(categories.items(), key=lambda kv: table_order.index(kv[0]))
+    add_notes_column = params[PARAM_NOTES_COLUMN]
+    for idx, (category, concepts) in enumerate(ordered_categories):
+        create_table(category, concepts, idx+1, doc, add_notes_column)
+
+    try:
+        doc.save(str(params[PARAM_OUTPUT_PATH]))
+        return True
+    except PermissionError:
+        err_text = f'"{params[PARAM_OUTPUT_PATH].name}" is currently open. Please close and try again.'
+        print("Error: " + err_text)
+        import ctypes  
+        ctypes.windll.user32.MessageBoxW(0, err_text, "Error Creating Word Document", 0 + 16)
+        return False
 
 
-def create_names_tables(groups, doc):
-    key = 'Proper Nouns'
-    if key not in groups:
-        return 1
-
-    # This table holds all the Proper Nouns
-    add_table_caption("Proper Names", doc, 1)
-    table = doc.add_table(rows=1, cols=3, style='Table Grid')
-    add_table_headers("Proper Names", table, proper=True)
-    set_column_widths(table, [Cm(5)] * 3)
-
-    for concept in groups[key]:
-        row_cells = table.add_row().cells
-        row_cells[0].text = concept.word
-        row_cells[1].text = concept.gloss
-    set_column_widths(table, [Cm(5)] * 3)
-
-    return 2
-
-
-def create_table(group_name, groups, doc, idx, add_notes_column):
-    if group_name not in groups:
-        return idx
-    add_table_caption(group_name, doc, idx)
-    table = doc.add_table(rows=1, cols=6, style='Table Grid')
-    add_table_headers(group_name, table)
-    
-    for concept in sorted(groups[group_name], key=lambda c: c.word):
-        row_cells = table.add_row().cells
-        row_cells[0].text = concept.word
-        row_cells[1].text = concept.gloss
-        add_verse_sentences(concept, row_cells[2])
-        add_sample_sentences(concept, row_cells[3])
-
-    col_widths = []
-    if add_notes_column:
+def create_table(category, concepts, table_num, doc, add_notes_column):
+    # Figure out the column names and widths
+    if category == CATEGORY_PROPER:
+        col_names = [f'Nouns: {category}s', HEADER_GLOSS, HEADER_TARGET_WORD]
+        col_widths = [Cm(5)] * 3
+    elif add_notes_column:
+        col_names = [category + 's', HEADER_GLOSS, HEADER_OCCURRENCE, HEADER_SAMPLE, HEADER_TARGET_WORD, HEADER_TARGET_GLOSS, HEADER_NOTES]
         col_widths = [Cm(2.5), Cm(3), Cm(6), Cm(3), Cm(3), Cm(3), Cm(3)]
-        table.add_column(col_widths[-1])
-        table.cell(0, len(col_widths)-1).text = 'Notes'
     else:
+        col_names = [category + 's', HEADER_GLOSS, HEADER_OCCURRENCE, HEADER_SAMPLE, HEADER_TARGET_WORD, HEADER_TARGET_GLOSS]
         col_widths = [Cm(2.7), Cm(3.2), Cm(6.3), Cm(4), Cm(3.4), Cm(3.4)]
 
-    set_column_widths(table, col_widths)
-    return idx + 1
-
-
-def add_table_caption(name, doc, idx):
-    if idx > 1:
+    # Add the caption
+    if table_num > 1:
         doc.add_paragraph().paragraph_format.space_after = Pt(0)
-    caption = doc.add_paragraph(f'Table {idx}. {name}')
+    caption = doc.add_paragraph(f'Table {table_num}. {category}s')
     caption.paragraph_format.alignment = WD_ALIGN_PARAGRAPH.CENTER
     caption.paragraph_format.space_after = Pt(0)
 
+    # Create the table
+    table = doc.add_table(rows=1, cols=len(col_names), style='Table Grid')
 
-def add_table_headers(name, table, proper=False):
-    names = []
-    if proper:
-        names = ['Nouns: ' + name, 'Glosses', 'Target Words']
-    else:
-        names = [
-            name,
-            'Glosses',
-            'Verses',
-            'Target Sentences',
-            'Target Words',
-            'Target Glosses'
-        ]
-
+    # Add the header
     header_cols = table.row_cells(0)
-    if len(names) != len(header_cols):
-        # This should never happen but safer to check anyway
-        print('Wrong number of columns for ' + name)
-        return
-
-    for idx, text in enumerate(names):
-        if text == 'Target Words':
-            header_cols[idx].text = text
+    for idx, text in enumerate(col_names):
+        header_cols[idx].text = text
+        if text == HEADER_TARGET_WORD:
             header_cols[idx].paragraphs[0].runs[0].font.highlight_color = WD_COLOR_INDEX.YELLOW
-        else:
-            header_cols[idx].text = text
+
+    # TODO do we need to alphabetize the concepts?
+    for concept in concepts:
+        row_cells = table.add_row().cells
+        row_cells[0].text = concept[CONCEPT_WORD]
+        row_cells[1].text = concept[CONCEPT_GLOSS]
+
+        if CONCEPT_OCCURRENCES in concept:
+            add_verse_sentences(concept, row_cells[2])
+        if CONCEPT_SAMPLE in concept:
+            add_sample_sentences(concept, row_cells[3])
+
+    # Each cell width needs to be set individually
+    for idx, col in enumerate(table.columns):
+        for cell in col.cells:
+            cell.width = col_widths[idx]
 
 
-SENTENCE_REGEX = re.compile(r'([^.?!]+[.?!]\S*) ?')
 def add_verse_sentences(concept, table_cell):
-    # Remove the sense -X from the word
-    dash_idx = concept.word.rindex('-')
-    word = concept.word[:dash_idx]
-    
-    # Split the reference and verse text
-    colon_idx = concept.verse.index(':')
-    verse_start = concept.verse.index(' ', colon_idx)
-    ref = concept.verse[:verse_start]
-    verse_text = concept.verse[verse_start+1:]
-
-    # Start with the verse ref
-    table_cell.text = ref
     paragraph = table_cell.paragraphs[0]
 
-    # Split the sentences and return the ones that contain the word
-    word_regex = r'\b(' + re.escape(word) + r'(?:s|es|ed|d)?)\b'
-    word_found = False
-    for sentence in SENTENCE_REGEX.findall(verse_text):
-        m = re.search(word_regex, sentence, re.IGNORECASE)
-        if m:
-            # Make the matched word bold in the sentence
-            start, end = m.span(1)
+    if concept[CONCEPT_OCCURRENCES]:
+        paragraph.add_run(text=concept[CONCEPT_VERSE_REF])
+
+        # Show each occurrence of the word in bold
+        for occurrence in concept[CONCEPT_OCCURRENCES]:
+            sentence = occurrence['sentence']
+            start, end = occurrence['location']
             paragraph.add_run(text=' ' + sentence[:start])
             paragraph.add_run(text=sentence[start:end]).bold = True
             paragraph.add_run(text=sentence[end:])
-            word_found = True
-
-    if not word_found:
-        # The verse might have an unrecognizable form of the word, the word
-        # might not be present at all due to restructuring. If the word is
-        # not found, show the whole verse and highlight the text so the user
-        # knows to attend to it
-        paragraph.clear()
-        run_font = paragraph.add_run(text=concept.verse).font
-        run_font.highlight_color = WD_COLOR_INDEX.YELLOW
-        run_font.size = Pt(10)
     else:
-        for run in paragraph.runs:
-            run.font.size = Pt(10)
+        # Show the whole verse and highlight the text so the user knows to attend to it
+        run_text = concept[CONCEPT_VERSE_REF] + ' ' + concept[CONCEPT_VERSE_TEXT]
+        run_font = paragraph.add_run(text=run_text).font
+        run_font.highlight_color = WD_COLOR_INDEX.YELLOW
+
+    for run in paragraph.runs:
+        run.font.size = Pt(10)
 
 
 def add_sample_sentences(concept, table_cell):
-    if not concept.sample:
-        return
-
     # Start with the sample sentence itself with the separating bar
-    table_cell.text = concept.sample + ' | '
+    table_cell.text = concept[CONCEPT_SAMPLE] + ' | '
     paragraph = table_cell.paragraphs[0]
 
     # Add the place where the translator needs to translate
@@ -261,15 +280,9 @@ def add_sample_sentences(concept, table_cell):
         run.font.size = Pt(10)
 
 
-def set_column_widths(table, widths):
-    for idx, col in enumerate(table.columns):
-        for cell in col.cells:
-            cell.width = widths[idx]
-
-
 if __name__ == "__main__":
     params = get_params()
     if params:
-        verses = import_concepts(params)
-        export_document(verses, params)
-        print(f'Successfully exported "{params["output_path"]}"')
+        concepts = import_concepts(params)
+        if export_document(concepts, params):
+            print(f'Successfully exported "{params[PARAM_OUTPUT_PATH]}"')
