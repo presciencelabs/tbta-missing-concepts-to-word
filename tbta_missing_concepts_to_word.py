@@ -71,13 +71,15 @@ def get_params():
     return {
         PARAM_INPUT_PATH: file_path,
         PARAM_OUTPUT_PATH: file_path.with_name(f'Lexicon - {file_path.stem}.docx'),
-        PARAM_NOTES_COLUMN: '-N' in sys.argv or '-n' in sys.argv
+        PARAM_NOTES_COLUMN: '-N' in sys.argv or '-n' in sys.argv,
+
     }
 
 
 def import_concepts(params):
     CONCEPT_REGEX = re.compile(r'^Concept \((?P<category>[a-zA-Z]+)\): (?P<word>[.a-zA-Z0-9- ]+?-[A-Z])(?:  \'(?P<gloss>.+?)\')?$')
     VERSE_REGEX = re.compile(r'^Verse: (?P<ref>[.a-zA-Z0-9- ]+:\d+) ?(?P<text>.*)$')
+    GLOSS_REPLACE_REGEX = re.compile(r'\((LDV|simple|inexplicable|proper name|universal primitive)\) ')
     categories = {}
 
     def add_concept_to_category(concept, category):
@@ -98,10 +100,10 @@ def import_concepts(params):
                 if not concept_match:
                     print('Unexpected format for Concept on line ' + str(line_num))
                     continue
-                # TODO remove the (LDV) (proper name) etc from the gloss, except for (complex)
+
                 concept = {
                     CONCEPT_WORD: concept_match['word'],
-                    CONCEPT_GLOSS: concept_match['gloss'] or ''
+                    CONCEPT_GLOSS: GLOSS_REPLACE_REGEX.sub('', concept_match['gloss']) if concept_match['gloss'] else ''
                 }
                 category = add_concept_to_category(concept, concept_match['category'])
 
@@ -285,4 +287,5 @@ if __name__ == "__main__":
     if params:
         concepts = import_concepts(params)
         if export_document(concepts, params):
+            params[PARAM_INPUT_PATH].unlink()   # delete the original text file
             print(f'Successfully exported "{params[PARAM_OUTPUT_PATH]}"')
